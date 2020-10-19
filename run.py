@@ -1,5 +1,16 @@
 #%%
+## GRU-D implementation from https://github.com/Han-JD/GRU-D
+
+#%%
+!pip install pycm
+!git clone https://github.com/lessw2020/Ranger-Deep-Learning-Optimizer
+!cd Ranger-Deep-Learning-Optimizer
+!pip install -e . 
+#%%
+
+import ranger2020
 import matplotlib
+import math
 import torch
 import numpy as np
 import pandas as pd
@@ -8,15 +19,12 @@ import numbers
 import torch.utils.data as utils
 from sklearn.metrics import roc_curve, roc_auc_score
 import glob
-from tqdm import tqdm
+from tqdm.notebook import tqdm
 from pycm import *
 from pathlib import Path
 import os
 import random
 import matplotlib.pyplot as plt
-from ranger import Ranger  # this is from ranger.py
-from ranger import RangerVA  # this is from ranger913A.py
-from ranger import RangerQH  # this is from rangerqh.py
 import datetime
 
 print("import done")
@@ -25,15 +33,6 @@ random.seed(42)
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 print('Using device:', device, os.linesep)
-
-
-# Additional Info when using cuda
-if device.type == 'cuda':
-    print(torch.cuda.get_device_name(0))
-print('Memory Usage:')
-print('Allocated:', round(torch.cuda.memory_allocated(0) / 1024 ** 3, 1), 'GB')
-print('Cached:   ', round(torch.cuda.memory_cached(0) / 1024 ** 3, 1), 'GB')
-
 
 #%%
 def timeparser(time):
@@ -316,7 +315,7 @@ class GRUD(torch.nn.Module):
         self.output_size = output_size
         self.num_layers = num_layers
         self.zeros = torch.autograd.Variable(torch.zeros(input_size))
-        self.x_mean = torch.autograd.Variable(torch.tensor(x_mean))
+        self.x_mean = torch.autograd.Variable(torch.clone(x_mean).detach())
         self.bias = bias
         self.batch_first = batch_first
         self.dropout_type = dropout_type
@@ -652,8 +651,8 @@ class GRUD(torch.nn.Module):
 
         w_hy = getattr(self, 'weight_hy')
         b_y = getattr(self, 'bias_y')
-
-        #print(h)
+        if epoch == save_point:
+            temp_h_col.append(list(h.detach().numpy()))
 
         output = torch.matmul(w_hy, h) + b_y
         output = torch.sigmoid(output)
@@ -695,482 +694,364 @@ def data_dataloader(dataset, outcomes, train_proportion=0.8, dev_proportion=0.2,
     print("test_data.shape : {}\t test_label.shape : {}".format(test_data.shape, test_label.shape))
 
     return train_dataloader, dev_dataloader, test_dataloader
-
-def fit(model, criterion, learning_rate,
-        train_dataloader, dev_dataloader, test_dataloader,
-        learning_rate_decay=0, n_epochs=30,):
-    epoch_losses = []
-
-    # to check the update
-    old_state_dict = {}
-    for key in model.state_dict():
-        old_state_dict[key] = model.state_dict()[key].clone()
-
-    for epoch in range(n_epochs):
-
-        if learning_rate_decay != 0:
-
-            # every [decay_step] epoch reduce the learning rate by half
-            if epoch % learning_rate_decay == 0:
-                learning_rate = learning_rate / 2
-                #optimizer = optimizer
-                print('at epoch {} learning_rate is updated to {}'.format(epoch+1, learning_rate))
-
-        # train the model
-        losses, acc = [], []
-        label, pred = [], []
-        y_pred_col = []
-        model.train()
-        for train_data, train_label in tqdm(train_dataloader):
-            # Zero the parameter gradients
-            optimizer.zero_grad()
-
-            # Squeeze the data [1, 33, 49], [1,5] to [33, 49], [5]
-            train_data = torch.squeeze(train_data)
-            train_label = torch.squeeze(train_label)
-            # print(train_label)
-            # Forward pass : Compute predicted y by passing train data to the model
-            y_pred = model(train_data)
-
-            # y_pred = y_pred[:, None]
-            # train_label = train_label[:, None]
-
-            # print(y_pred.shape)
-            # print(train_label.shape)
-
-            # Save predict and label
-            y_pred_col.append(y_pred.item())
-            pred.append(y_pred.item() > 0.5)
-            label.append(train_label.item())
-
-            # print('y_pred: {}\t label: {}'.format(y_pred, train_label))
-
-            # Compute loss
-            loss = criterion(y_pred, train_label)
-            acc.append(
-                torch.eq(
-                    (torch.sigmoid(y_pred).data > 0.5).float(),
-                    train_label)
-            )
-            losses.append(loss.item())
-
-            # perform a backward pass, and update the weights.
-            loss.backward()
-            optimizer.step()
-
-        train_acc = torch.mean(torch.cat(acc).float())
-        train_loss = np.mean(losses)
-
-        train_pred_out = pred
-        train_label_out = label
-
-        # save new params
-        new_state_dict = {}
-        for key in model.state_dict():
-            new_state_dict[key] = model.state_dict()[key].clone()
-
-        # compare params
-        for key in old_state_dict:
-            if (old_state_dict[key] == new_state_dict[key]).all():
-                print('Not updated in {}'.format(key))
-        # dev loss
-        losses, acc = [], []
-        label, pred = [], []
-        model.eval()
-        for dev_data, dev_label in tqdm(dev_dataloader):
-            # Squeeze the data [1, 33, 49], [1,5] to [33, 49], [5]
-            dev_data = torch.squeeze(dev_data)
-            dev_label = torch.squeeze(dev_label)
-
-            # Forward pass : Compute predicted y by passing train data to the model
-            y_pred = model(dev_data)
-
-            # Save predict and label
-            pred.append(y_pred.item())
-            label.append(dev_label.item())
-
-            # Compute loss
-            loss = criterion(y_pred, dev_label)
-            acc.append(
-                torch.eq(
-                    (torch.sigmoid(y_pred).data > 0.5).float(),
-                    dev_label)
-            )
-            losses.append(loss.item())
-
-        dev_acc = torch.mean(torch.cat(acc).float())
-        dev_loss = np.mean(losses)
-
-        dev_pred_out = pred
-        dev_label_out = label
-
-        prediction_failled = []
-        false_positive = []
-
-        # test loss
-        losses, acc = [], []
-        label, pred = [], []
-        model.eval()
-        for test_data, test_label in tqdm(test_dataloader):
-            # Squeeze the data [1, 33, 49], [1,5] to [33, 49], [5]
-            test_data = torch.squeeze(test_data)
-            test_label = torch.squeeze(test_label)
-            # Forward pass : Compute predicted y by passing train data to the model
-            y_pred = model(test_data)
-
-            if round(y_pred.data.tolist()[0]) != test_label.item():
-                prediction_failled.append(1)
-                if test_label.item() == 0:
-                    false_positive.append(1)
-                else:
-                    false_positive.append(0)
-                # print(round(y_pred.data.tolist()[0]), y_pred.data.tolist()[0], test_label.item())
-            else:
-                prediction_failled.append(0)
-                # print(round(y_pred.data.tolist()[0]), y_pred.data.tolist()[0], test_label.item())
-
-            # Save predict and label
-            pred.append(y_pred.item())
-            label.append(test_label.item())
-
-            # Compute loss
-            loss = criterion(y_pred, test_label)
-            acc.append(
-                torch.eq(
-                    (torch.sigmoid(y_pred).data > 0.5).float(),
-                    test_label)
-            )
-            losses.append(loss.item())
-
-        test_acc = torch.mean(torch.cat(acc).float())
-        test_loss = np.mean(losses)
-
-        test_pred_out = pred
-        test_label_out = label
-        # print(pred, label)
-
-        epoch_losses.append([
-            train_loss, dev_loss, test_loss,
-            train_acc, dev_acc, test_acc,
-            train_pred_out, dev_pred_out, test_pred_out,
-            train_label_out, dev_label_out, test_label_out,
-        ])
-
-        pred = np.asarray(pred)
-        label = np.asarray(label)
-        auc_score = roc_auc_score(label, pred)
-
-        # print("Epoch: {} Train: {:.4f}/{:.2f}%, Dev: {:.4f}/{:.2f}%, Test: {:.4f}/{:.2f}% AUC: {:.4f}".format(
-        #     epoch, train_loss, train_acc*100, dev_loss, dev_acc*100, test_loss, test_acc*100, auc_score))
-        print("Epoch: {} Train loss: {:.4f}, Dev loss: {:.4f}, Test loss: {:.4f}, Test AUC: {:.4f}".format(epoch+1,
-                                                                                                           train_loss,
-                                                                                                           dev_loss,
-                                                                                                           test_loss,
-                                                                                                           auc_score))
-
-        # save the parameters
-        train_log = []
-        train_log.append(model.state_dict())
-        torch.save(model.state_dict(), outpath.format("para" + str(epoch+1) + '_' + str(str(round(test_loss,4)).split('.')[1]) + ".pt"))
-
-        np.save(outpath.format(str("prediction_failed_") + str(epoch+1)), prediction_failled)
-        np.save(outpath.format(str("false_positive_") + str(epoch+1)), false_positive)
-
-        cm = ConfusionMatrix(label, pred.round())
-
-        #print(cm)
-
-        cm.print_matrix()
-        cm.save_stat(outpath.format(str("cm") + str(epoch+1) + str(str(round(test_loss,4)).split('.')[1])))
-        cm.save_html(outpath.format(str("cm") + str(epoch+1) + str(str(round(test_loss,4)).split('.')[1])))
-
-    return epoch_losses
-
-
-def plot_roc_and_auc_score(outputs, labels, title):
-    false_positive_rate, true_positive_rate, threshold = roc_curve(labels, outputs)
-    auc_score = roc_auc_score(labels, outputs)
-    plt.plot(false_positive_rate, true_positive_rate, label=folder_name+'= {:.4f}'.format(auc_score))
-    plt.plot([0, 1], [0, 1], 'red')
-    plt.xlabel('False Positive Rate')
-    plt.ylabel('True Positive Rate')
-    plt.axis([0, 1, 0, 1])
-    plt.title(title)
-    plt.legend(loc='lower right')
-    plt.savefig(outpath.format(filename+".png"))
-
-
 #%%
+folder_date = datetime.datetime.now().strftime('%Y%m%d')
+outpath_folder = r'/output/{}'.format(folder_date,)
+outpath = outpath_folder + '/{}'
+#print(outpath)
+import itertools
+import statistics
 
-inputpath = r'/opt/project/data'
+if os.path.exists(os.path.join(Path(outpath).parent, 'dataset.npy')):
+    pass
+else:
+    input_parent = '../input/data'
+    var_list = []
+    shuffler = []
+    len_checker = []
+    path, dirs, files = next(os.walk(input_parent))
+    file_count = len(files)
+    print(f"Number of files = {file_count}")
+    for file in tqdm(os.listdir(input_parent)):
+        inputpath = (os.path.join(input_parent, file))
+        shuffler.append(inputpath)
+        df = pd.read_csv(inputpath)
+        #print(df)
+        var_list.append(df['Parameter'].unique().tolist())
+        len_checker.append(len(df['Time'].unique()))
+    print(f"file length mean {statistics.mean(len_checker)}, stdev {statistics.stdev(len_checker)}", os.linesep)
 
-input_list_basic = ['fever', 'reducer', 'antibiotics', 'surveillance',
-                    'KCDC_surveillance', 'gender', 'weight']
-input_list_non = ['babyid', 'isFlu', 'weekNumber']
-input_list_age = ['age_0to2', 'age_2to5', 'age_5to12', 'age_12p']
-input_list_meteorolgical = ['temperature_avg', 'temperature_min', 'temperature_max',
-                            'dew_point_avg', 'pressure_avg', 'humidity_avg']
-input_list_all = input_list_basic + input_list_age + input_list_meteorolgical + input_list_non
-#print(input_list_all)
+    flattened =list(set(itertools.chain(*var_list)))
+    var_list_in = [x for x in flattened if x not in ['babyid', 'isFlu','weekNumber']]
+    var_list = var_list_in + ['babyid', 'isFlu','weekNumber']
 
+    numbering = [x for x in range(len(var_list))]
+    inputdict = dict(zip(var_list, numbering))
 
-input_dict_counter = -1
-while input_dict_counter < 9:
-    print(os.linesep, input_dict_counter+1, "th inputdict printing...")
-    if input_dict_counter == -1:
-        pass
-    elif input_dict_counter <= 6:
-        input_list_basic_temp = (input_list_basic[:input_dict_counter] + input_list_basic[input_dict_counter + 1:])
-        input_list_all = input_list_basic_temp + input_list_age + input_list_meteorolgical + input_list_non + [input_list_basic[input_dict_counter]]
-    elif input_dict_counter == 7:
-        input_list_all = input_list_basic + input_list_meteorolgical + input_list_non + input_list_age
-    elif input_dict_counter == 8:
-        input_list_all = input_list_basic + input_list_age + input_list_non + input_list_meteorolgical
+    print(inputdict, os.linesep)
+    print("id position in inputdict at {}".format(list(inputdict.keys()).index('babyid')))
+    print()
 
-    #print(input_list_all)
-    inputdict = {}
-    init_value = 0
-    for variable in input_list_all:
-        inputdict[variable] = init_value
-        init_value += 1
-
-    input_dict_counter += 1
-    #print(input_dict_counter)
-    print(inputdict)
-
-    folder_name_list = ['all'] + input_list_basic + ['age', 'meteorological']
-    #folder_date = '200413'
-    folder_date = datetime.datetime.now().strftime('%Y%m%d')
-    folder_number = str(input_dict_counter+1).zfill(2)
-    folder_name = folder_name_list[input_dict_counter]
-    #print(folder_date)
-    outpath_folder = r'/opt/project/{}/{}_{}'.format(folder_date, folder_number, folder_name)
-    #print(outpath_folder)
-    outpath = outpath_folder + '/{}'
-    #print(outpath)
 
     if os.path.exists(Path(outpath).parent):
         pass
     else:
-        oldmask = os.umask(000)
-        os.makedirs(Path(outpath).parent, 0o777)
-        os.umask(oldmask)
+        os.makedirs(Path(outpath).parent)
+        
+#%%
 
-    path, dirs, files = next(os.walk(inputpath))
-    file_count = len(files)
-    print("Number of files = ", file_count, os.linesep)
+'''
+data read/processing
+'''
+size = 70 
+id_posistion = inputdict['babyid']
+input_length = inputdict['babyid'] 
+dataset = np.zeros((1, 3, input_length, size))
 
-    #%%
-
-    '''
-    data read/processing
-    '''
-    size = 70  # change to max lan
-    id_posistion = inputdict['babyid']  # babyid
-    input_length = inputdict['babyid']  # input variables ~ from the paper
-    dataset = np.zeros((1, 3, input_length, size))
-
-    all_x_add = np.zeros((input_length, 1))
-    inputs = []
-
-    # prepare empty list to put data
-    # len(inputdict)-2: two items has same agg_no
-    # print(len(inputdict))
-
-    for i in range(len(inputdict)):
-        t = []
-        inputs.append(t)
-
-    bad_file = []
-    bad_file_append= bad_file.append
-    temp_label = []
-    list_file_discarded = []
-
-    numpy.random.seed(42)
-    randomReadOrder = np.random.choice(range(file_count), file_count, replace=False)
-    #print(os.path.join(Path(outpath).parent, 'dataset.npy'))
-    if os.path.exists(os.path.join(Path(outpath).parent, 'dataset.npy')):
-        dataset = np.load((os.path.join(Path(outpath).parent, 'dataset.npy')))
-        print(dataset, os.linesep, "load dataset.npy")
-    else:
-        try:
-            for i in tqdm(range(file_count), leave=None, position=0):
-                j = randomReadOrder[i]
-                path = glob.glob(os.path.join(inputpath, '{0}.csv'.format(j+1)))
-                #print(j)
-                df = pd.read_csv(path[0], header=0, dtype={'Time':str}, parse_dates=['Time'], date_parser=timeparser)
-                if np.isnan(df['Value']).any():
-                #if df['Value'].isnull().values.any():
-                    bad_file_append(j)
-                    pass
-                else :
-                    #print(df)
-                    inputs = df_to_inputs(df=df, inputdict=inputdict, inputs=inputs)
-                    temp_id = (float(df.loc[df['Parameter'] == 'babyid', 'Value'].values[0]))
-                    temp_check = (float(df.loc[df['Parameter'] == 'isFlu', 'Value']))
-                    temp_label.append([j, temp_id, temp_check])
-
-                    s_dataset, all_x, id = df_to_x_m_d(df=df, inputdict=inputdict, size=size,
-                                                       id_posistion=id_posistion, split=input_length)
-                    dataset = np.concatenate((dataset, s_dataset[np.newaxis, :, :, :]))
-                    all_x_add = np.concatenate((all_x_add, all_x), axis=1)
-
-            print(os.linesep, inputs[0][0])
-
-            dataset = dataset[1:, :, :, :]
-            # (total datasets, kind of data(x, masking, and delta), input length, num of varience)
-            print(dataset.shape)
-            print(dataset[0].shape)
-            print(dataset[0][0][0])
-
-            print(all_x_add.shape)
-            all_x_add = all_x_add[:, 1:]
-            print(all_x_add.shape)
-        except IndexError:
-            print(os.linesep, df, j, os.linesep, "IndexError")
-        except TypeError:
-            print(os.linesep, df, j)
+all_x_add = np.zeros((input_length, 1))
+inputs = []
 
 
-        # %%
-        df2 = pd.DataFrame(temp_label, columns=['filename', 'babyid', 'isflu'])
-        df2.to_csv(outpath.format('label.csv'), header=True, index=False)
-        print(df2)
-        df3 = pd.DataFrame(list_file_discarded, columns=['filename', 'reason'])
-        df3.to_csv(outpath.format('discarded.csv'), header=True, index=False)
+for i in range(len(inputdict)):
+    t = []
+    inputs.append(t)
 
-        # %%
+bad_file = []
+bad_file_append= bad_file.append
+temp_label = []
+list_file_discarded = []
 
-        train_proportion = 0.8
-        train_index = int(all_x_add.shape[1] * train_proportion)
-        train_x = all_x_add[:, :train_index]
-        train_x.shape
+np.random.seed(42)
+if os.path.exists(os.path.join(Path(outpath).parent, 'dataset.npy')):
+    pass
+else:
+    for file in tqdm(shuffler):
+        #print(file)
+        df = pd.read_csv(file, header=0, dtype={'Time':str}, parse_dates=['Time'], date_parser=timeparser)
+        df = df.drop(df.columns[0], axis=1)
 
+        if np.isnan(df['Value']).any():
+            bad_file_append(file)
+            pass
+        else :
+            #print(df)
+            inputs = df_to_inputs(df=df, inputdict=inputdict, inputs=inputs)
+            temp_id = (float(df.loc[df['Parameter'] == 'babyid', 'Value'].values[0]))
+            temp_check = (float(df.loc[df['Parameter'] == 'isFlu', 'Value']))
+            temp_label.append([os.path.basename(file), temp_id, temp_check])
 
-        # %%
+            s_dataset, all_x, id = df_to_x_m_d(df=df, inputdict=inputdict, size=size, id_posistion=id_posistion, split=input_length)
+            dataset = np.concatenate((dataset, s_dataset[np.newaxis, :, :, :]))
+            all_x_add = np.concatenate((all_x_add, all_x), axis=1)
 
-        x_mean = get_mean(train_x)
-        print('x_mean', x_mean, len(x_mean))
+            
+#%%
+if os.path.exists(os.path.join(Path(outpath).parent, 'dataset.npy')):
+    dataset = np.load((os.path.join(Path(outpath).parent, 'dataset.npy')))
+    print("load dataset.npy")
+else:    
+    print(inputs[0][0])
 
-        x_std = get_std(train_x)
-        print('x_std', x_std, len(x_std))
-        #%%
-        # dataset shape : (4000, 3, 33, 49)
+    dataset = dataset[1:, :, :, :]
 
-        # %%
+    print(dataset.shape)
+    print(dataset[0].shape)
+    print(dataset[0][0][0])
 
-        x_mean = np.asarray(x_mean)
-        x_std = np.asarray(x_std)
+    print(all_x_add.shape)
+    all_x_add = all_x_add[:, 1:]
 
-        # %%
-
-        dataset = dataset_normalize(dataset=dataset, mean=x_mean, std=x_std)
-        dataset = np.nan_to_num(dataset)
-
-        # %%
-
-        nor_mean, nor_median, nor_std, nor_var = normalize_chk(dataset)
-
-        # %%
-
-        np.save(outpath.format("nor_mean"), nor_mean)
-        np.save(outpath.format("nor_median"), nor_median)
-        np.save(outpath.format("dataset"), dataset)
-    # %%
-    t_dataset = np.load(outpath.format("dataset.npy"))
-    print(t_dataset.shape)
 
     # %%
-    # %%
+    df2 = pd.DataFrame(temp_label, columns=['filename', 'babyid', 'isflu'])
+    df2.to_csv(outpath.format('label.csv'), header=True, index=False)
+    print(df2)
+    df3 = pd.DataFrame(list_file_discarded, columns=['filename', 'reason'])
+    df3.to_csv(outpath.format('discarded.csv'), header=True, index=False)
+#%%
 
-    A_outcomes = pd.read_csv(outpath.format('label.csv'))
-    y1_outcomes = df_to_y1(A_outcomes)
-    print(y1_outcomes)
-    np.save(outpath.format("y1_outcomes.npy"), y1_outcomes)
-    print(y1_outcomes.shape)
+if os.path.exists(os.path.join(Path(outpath).parent, 'dataset.npy')):
+    pass
+else:
+# %%
 
+    train_proportion = 0.8
+    train_index = int(all_x_add.shape[1] * train_proportion)
+    train_x = all_x_add[:, :train_index]
+    train_x.shape
 
 
     # %%
 
-    t_dataset = np.load(outpath.format("dataset.npy"))
-    t_out = np.load(outpath.format("y1_outcomes.npy"))
+    x_mean = get_mean(train_x)
+    print('x_mean', x_mean, len(x_mean))
 
-    print(t_dataset.shape)
-    print(t_out.shape)
-
-    train_dataloader, dev_dataloader, test_dataloader = data_dataloader(t_dataset, t_out,
-                                                                        train_proportion=0.8,
-                                                                        dev_proportion=0.2, test_proportion=0.2)
-
-
+    x_std = get_std(train_x)
+    print('x_std', x_std, len(x_std))
+    #%%
 
     # %%
 
-    input_size = inputdict['babyid']  # num of variables
-    hidden_size = inputdict['babyid']  # same as inputsize
-    output_size = 1
-    num_layers = 70  # num of step or layers base on the paper
-
-    x_mean = torch.Tensor(np.load(outpath.format('nor_mean.npy')))
-    x_median = torch.Tensor(np.load(outpath.format('nor_median.npy')))
-
-
+    x_mean = np.asarray(x_mean)
+    x_std = np.asarray(x_std)
 
     # %%
 
-    # dropout_type : Moon, Gal, mloss
-    model = GRUD(input_size=input_size, hidden_size=hidden_size, output_size=output_size, dropout=0.03,
-                 dropout_type='Moon', x_mean=x_mean, num_layers=num_layers)
+    dataset = dataset_normalize(dataset=dataset, mean=x_mean, std=x_std)
+    dataset = np.nan_to_num(dataset)
+
+    # %%
+
+    nor_mean, nor_median, nor_std, nor_var = normalize_chk(dataset)
+
+    # %%
+
+    np.save(outpath.format("nor_mean"), nor_mean)
+    np.save(outpath.format("nor_median"), nor_median)
+    np.save(outpath.format("dataset"), dataset)
+# %%
+t_dataset = np.load(outpath.format("dataset.npy"))
+print(t_dataset.shape)
+
+# %%
+# %%
+
+df_label = pd.read_csv(outpath.format('label.csv'))
+np_label = np.array(df_to_y1(df_label), dtype=int)
+
+print(np_label)
+np.save(outpath.format("np_label.npy"), np_label)
+print(np_label.shape)
 
 
 
-    count = count_parameters(model)
-    print('number of parameters : ', count)
-    print(list(model.parameters())[0].grad)
+# %%
 
-    criterion = torch.nn.BCELoss()
-    optimizer = Ranger(model.parameters())
-    #%%
+t_dataset = np.load(outpath.format("dataset.npy"))
+t_out = np.load(outpath.format("np_label.npy"))
 
-    learning_rate = 0.01
-    learning_rate_decay = 8
-    n_epochs = 16
-    cm='cm'
-    epoch_losses = fit(model, criterion, learning_rate,
-                       train_dataloader, dev_dataloader, test_dataloader,
-                       learning_rate_decay, n_epochs)
+print(t_dataset.shape)
+print(t_out.shape)
 
-    #%%
-
-    learning_rate = 0.0001
-    learning_rate_decay = 9
-    n_epochs = 17
-
-    epoch_losses_s = fit(model, criterion, learning_rate,
-                         train_dataloader, dev_dataloader, test_dataloader,
-                         learning_rate_decay, n_epochs)
-
-    #%%
-    learning_rate = 0.005
-    learning_rate_decay = 9
-    n_epochs = 17
-
-    epoch_losses_t = fit(model, criterion, learning_rate,
-                         train_dataloader, dev_dataloader, test_dataloader,
-                         learning_rate_decay, n_epochs)
+train_dataloader, dev_dataloader, test_dataloader = data_dataloader(t_dataset, t_out,train_proportion=0.8,dev_proportion=0.2, test_proportion=0.2)
 
 
-    #%%
+# %%
+x_mean = torch.Tensor(np.load(outpath.format('nor_mean.npy'))).clone().detach()
+x_median = torch.Tensor(np.load(outpath.format('nor_median.npy'))).clone().detach()
 
-    test_preds, test_labels = epoch_losses_t[1][8], epoch_losses_s[1][11]
-    #print(type(test_preds), type(test_labels))
-    np.save(outpath.format(folder_name + '_test_preds'), test_preds)
-    np.save(outpath.format(folder_name + '_test_labels'), test_labels)
+#%%
+auc_collector = [] 
+acc_collector = []
+lr_collector = []
+h_collector = {}
+label_collector = []
+save_point = 100
+#%%
 
-    filename = folder_name + "_auc"
-    #%%
-    plot_roc_and_auc_score(test_preds, test_labels, 'ROC curve')
+import math
 
 
+input_size = inputdict['babyid']  # num of variables
+hidden_size = inputdict['babyid']  # same as inputsize
+output_size = 1
+num_layers = 70  # num of step or layers base on the paper
 
+
+# dropout_type : Moon, Gal, mloss
+model = GRUD(input_size=input_size, hidden_size=hidden_size, output_size=output_size, dropout=0, dropout_type='Moon', x_mean=x_mean, num_layers=num_layers)
+
+count = count_parameters(model)
+print('number of parameters : ', count)
+print(list(model.parameters())[0].grad)
+
+#mini_batch_size = 100
+designated_epochs = 95
+criterion = torch.nn.BCELoss()
+optimizer = ranger2020.Ranger(model.parameters(), lr=0.1)
+scheduler = torch.optim.lr_scheduler.OneCycleLR(optimizer, max_lr=0.01, steps_per_epoch=len(train_dataloader), epochs=designated_epochs)
+
+epoch_losses = []
+
+# to check the update
+old_state_dict = {}
+for key in model.state_dict():
+    old_state_dict[key] = model.state_dict()[key].clone()
+
+for epoch in tqdm(range(designated_epochs)):
+    losses, acc = [], []
+    label, pred = [], []
+    model.train()
+    temp_h_col = []
+    for train_data, train_label in (train_dataloader):
+        # Zero the parameter gradients
+        optimizer.zero_grad()
+        train_data = torch.squeeze(train_data)
+        train_label = torch.squeeze(train_label).view(-1,1)
+
+        # Forward pass : Compute predicted y by passing train data to the model
+        y_pred = model(train_data).view(-1,1)
+        
+        # Save predict and label
+        pred.append(y_pred.item() > 0.5)
+        label.append(train_label.item())
+        
+        # Compute loss
+        loss = criterion(y_pred, train_label)
+        acc.append(torch.eq((torch.sigmoid(y_pred).data > 0.5).float(), train_label))
+        losses.append(loss.item())
+        
+        # perform a backward pass, and update the weights.
+        loss.backward()
+        optimizer.step()## due to tpu?
+        #xm.optimizer_step(optimizer, barrier=True)
+        scheduler.step()
+
+    train_acc = torch.mean(torch.cat(acc).float())
+    train_loss = np.mean(losses)
+
+    train_pred_out = pred
+    train_label_out = label
+    
+    ##hidden_state_collect
+    h_collector[epoch] = temp_h_col
+    #label_collect.append(label)
+
+    # save new params
+    new_state_dict = {}
+    for key in model.state_dict():
+        new_state_dict[key] = model.state_dict()[key].clone()
+
+    # compare params
+    for key in old_state_dict:
+        if (old_state_dict[key] == new_state_dict[key]).all():
+            print('Not updated in {}'.format(key))
+                
+                
+    # dev loss
+    losses, acc = [], []
+    label, pred = [], []
+    model.eval()
+    for dev_data, dev_label in (dev_dataloader):
+        # Squeeze the data [1, 33, 49], [1,5] to [33, 49], [5]
+        dev_data = torch.squeeze(dev_data)
+        dev_label = torch.squeeze(dev_label).view(-1,1)
+
+        # Forward pass : Compute predicted y by passing train data to the model
+        y_pred = model(dev_data).view(-1,1)
+
+        # Save predict and label
+        pred.append(y_pred.item()) 
+        label.append(dev_label.item())
+
+        # Compute loss
+        loss = criterion(y_pred, dev_label)
+        acc.append(torch.eq((torch.sigmoid(y_pred).data > 0.5).float(), dev_label))
+        losses.append(loss.item())
+
+    dev_acc = torch.mean(torch.cat(acc).float())
+    dev_loss = np.mean(losses)
+
+    dev_pred_out = pred
+    dev_label_out = label
+
+    # test loss
+    losses, acc = [], []
+    label, pred = [], []
+    model.eval()
+    for test_data, test_label in (test_dataloader):
+        
+        test_data = torch.squeeze(test_data)
+        test_label = torch.squeeze(test_label).view(-1,1)
+        
+        # Forward pass : Compute predicted y by passing train data to the model
+        y_pred = model(test_data).view(-1,1)
+
+        # Save predict and label
+        pred.append(y_pred.item()) 
+        label.append(test_label.item())
+
+        # Compute loss
+        #loss = criterion(y_pred, test_label)
+        loss = criterion(y_pred, test_label)
+        acc.append(torch.eq((torch.sigmoid(y_pred).data > 0.5).float(), test_label))
+        losses.append(loss.item())
+            
+
+    test_acc = torch.mean(torch.cat(acc).float())
+    test_loss = np.mean(losses)
+
+    test_pred_out = pred
+    test_label_out = label
+    #print(pred, label)
+
+    epoch_losses.append([
+        train_loss, dev_loss, test_loss,
+        train_acc, dev_acc, test_acc,
+        train_pred_out, dev_pred_out, test_pred_out,
+        train_label_out, dev_label_out, test_label_out,
+    ])
+
+    pred = np.asarray(pred)
+    psuedo_pred = [int(round(x)) for x in pred]
+    pred_text = ['Flu' if x ==1 else 'Not' for x in psuedo_pred]
+    label = np.asarray(label)
+    label_text = ['Flu' if int(x) ==1 else 'Not' for x in label]
+    auc_score = roc_auc_score(label, pred)
+    
+    #print(label, psuedo_pred)
+    #raise
+
+    print(f"Epoch: {epoch+1} Learning rate: {scheduler.get_last_lr()[0]:.5f}, Train loss: {train_loss:.4f}, Dev loss: {dev_loss:.4f}, Test loss: {test_loss:.4f}, Test AUC: {auc_score:.4f}")
+    # save the parameters
+    auc_collector.append(auc_score)
+    acc_collector.append(test_acc.item())
+    lr_collector.append(scheduler.get_last_lr()[0])
+    train_log = []
+    train_log.append(model.state_dict())
+    torch.save(model.state_dict(), outpath.format(f"para_e_{str(epoch+1).zfill(3)}_lr_{scheduler.get_last_lr()[0]}.pt")
+    #print(label, pred)
+    cm = ConfusionMatrix(label_text, pred_text)
+    cm.print_matrix()
+    #print(cm.binary)
+    #print(cm.ACC, cm.AUC)
